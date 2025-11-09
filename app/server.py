@@ -126,7 +126,7 @@ from .model_runtime import load_runtime_model, VideoInferenceService
 # ------------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.getLevelName(LOG_LEVEL.upper()),
-    format="[%(asctime)s] [%(levelname)s] %(message)s"
+    format="[%(asctime)s] [PID:%(process)d] [%(levelname)s] %(message)s"
 )
 log = logging.getLogger("asl-socketio")
 
