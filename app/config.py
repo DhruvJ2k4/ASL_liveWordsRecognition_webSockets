@@ -11,3 +11,6 @@ MODEL_PATH = os.getenv("MODEL_PATH", "./model/WLASL20c_model.h5")
 
 # In tests or dev, you can force a dummy model that emits stable predictions
 USE_DUMMY_MODEL = bool(int(os.getenv("USE_DUMMY_MODEL", "0")))
+
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "info")
