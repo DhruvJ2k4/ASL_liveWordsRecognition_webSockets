@@ -175,18 +175,37 @@ def get_labels():
 # )
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=["*"],
-    allow_headers=["*"],
+    cors_allowed_origins="*",
+    allow_upgrades=True,
     ping_timeout=120,
     ping_interval=25,
+    engineio_logger=False,
+    logger=False,
 )
-# Combine FastAPI and Socket.IO
-# app = socketio.ASGIApp(sio, fastapi_app)
+
+# CRITICAL: Disable polling completely
+sio.eio.transports = ["websocket"]
+
 app = socketio.ASGIApp(
     sio,
     fastapi_app,
     socketio_path="socket.io"
 )
+
+# sio = socketio.AsyncServer(
+#     async_mode="asgi",
+#     cors_allowed_origins=["*"],
+#     allow_headers=["*"],
+#     ping_timeout=120,
+#     ping_interval=25,
+# )
+# # Combine FastAPI and Socket.IO
+# # app = socketio.ASGIApp(sio, fastapi_app)
+# app = socketio.ASGIApp(
+#     sio,
+#     fastapi_app,
+#     socketio_path="socket.io"
+# )
 # Track one inference service per connected client
 clients = {}
 
