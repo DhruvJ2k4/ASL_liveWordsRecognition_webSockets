@@ -137,7 +137,7 @@ fastapi_app = FastAPI(title="ASL Realtime Backend (Socket.IO)", version="1.1.0")
 
 fastapi_app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else ["*"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -169,14 +169,24 @@ def get_labels():
 # ------------------------------------------------------------------------------
 # Socket.IO Server Configuration
 # ------------------------------------------------------------------------------
+# sio = socketio.AsyncServer(
+#     async_mode="asgi",
+#     cors_allowed_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else "*",
+# )
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else "*",
+    cors_allowed_origins=["*"],
+    allow_headers=["*"],
+    ping_timeout=120,
+    ping_interval=25,
 )
-
 # Combine FastAPI and Socket.IO
-app = socketio.ASGIApp(sio, fastapi_app)
-
+# app = socketio.ASGIApp(sio, fastapi_app)
+app = socketio.ASGIApp(
+    sio,
+    fastapi_app,
+    socketio_path="socket.io"
+)
 # Track one inference service per connected client
 clients = {}
 
