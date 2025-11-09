@@ -95,21 +95,46 @@ from tensorflow.keras.models import load_model
 from .config import DIM, FRAMES, CHANNELS, MODEL_PATH, THRESHOLD, USE_DUMMY_MODEL
 from .labels import LABELS
 
+# class DummyModel(object):
+#     def predict(self, x: np.ndarray) -> np.ndarray:
+#         # x: (1, T, H, W, C)
+#         batch = x.shape[0]
+#         num_classes = len(LABELS)
+#         logits = np.zeros((batch, num_classes), dtype="float32")
+#         logits[:, 10] = 0.9  # "hello"
+#         return logits
+
+# def load_runtime_model():
+#     if USE_DUMMY_MODEL:
+#         return DummyModel()
+#     if not os.path.exists(MODEL_PATH):
+#         return DummyModel()
+#     return load_model(MODEL_PATH)
+
+_MODEL_SINGLETON = None
+
 class DummyModel(object):
     def predict(self, x: np.ndarray) -> np.ndarray:
-        # x: (1, T, H, W, C)
         batch = x.shape[0]
-        num_classes = len(LABELS)
-        logits = np.zeros((batch, num_classes), dtype="float32")
-        logits[:, 10] = 0.9  # "hello"
+        logits = np.zeros((batch, len(LABELS)), dtype="float32")
+        logits[:, 10] = 0.9
         return logits
 
 def load_runtime_model():
+    global _MODEL_SINGLETON
+    if _MODEL_SINGLETON is not None:
+        return _MODEL_SINGLETON
+
     if USE_DUMMY_MODEL:
-        return DummyModel()
+        _MODEL_SINGLETON = DummyModel()
+        return _MODEL_SINGLETON
+
     if not os.path.exists(MODEL_PATH):
-        return DummyModel()
-    return load_model(MODEL_PATH)
+        _MODEL_SINGLETON = DummyModel()
+        return _MODEL_SINGLETON
+
+    _MODEL_SINGLETON = load_model(MODEL_PATH)
+    return _MODEL_SINGLETON
 
 class VideoInferenceService(object):
     """
