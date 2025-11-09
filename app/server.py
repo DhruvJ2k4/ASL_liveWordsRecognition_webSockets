@@ -115,7 +115,11 @@ import socketio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import DIM, LOG_LEVEL, CORS_ORIGINS
+from .config import (
+    DIM, LOG_LEVEL, CORS_ORIGINS, 
+    SOCKETIO_PING_TIMEOUT, SOCKETIO_PING_INTERVAL,
+    MAX_CLIENTS
+)
 from .labels import LABELS
 from .utils import b64_to_bgr_image, preprocess_frame_bgr_exact
 from .model_runtime import load_runtime_model, VideoInferenceService
@@ -172,36 +176,19 @@ def get_labels():
 
 
 
-# sio = socketio.AsyncServer(
-#     async_mode="asgi",
-#     cors_allowed_origins="*",
-#     allow_upgrades=True,
-#     ping_timeout=120,
-#     ping_interval=25,
-#     engineio_logger=False,
-#     logger=False,
-# )
+# CRITICAL FIX: Proper Socket.IO configuration to prevent crashes
 sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else "*",
+    ping_timeout=SOCKETIO_PING_TIMEOUT,
+    ping_interval=SOCKETIO_PING_INTERVAL,
+    max_http_buffer_size=10 * 1024 * 1024,  # 10MB max for base64 images
+    # Reduce logging noise
+    engineio_logger=False,
+    logger=False,
 )
-# CRITICAL: Disable polling completely
-# sio.eio.transports = ["websocket"]
 
-# app = socketio.ASGIApp(
-#     sio,
-#     fastapi_app,
-#     socketio_path="socket.io"
-# )
-
-# sio = socketio.AsyncServer(
-#     async_mode="asgi",
-#     cors_allowed_origins=["*"],
-#     allow_headers=["*"],
-#     ping_timeout=120,
-#     ping_interval=25,
-# )
-# # Combine FastAPI and Socket.IO
+# Combine FastAPI and Socket.IO
 app = socketio.ASGIApp(sio, fastapi_app)
 # app = socketio.ASGIApp(
 #     sio,
@@ -218,16 +205,29 @@ clients = {}
 
 @sio.event
 async def connect(sid, environ):
+    # CRITICAL FIX: Rate limiting to prevent server overload
+    if len(clients) >= MAX_CLIENTS:
+        log.warning(f"[CONNECT] Max clients ({MAX_CLIENTS}) reached, rejecting {sid}")
+        await sio.emit("error", {"message": "Server at capacity, please try again later"}, to=sid)
+        await sio.disconnect(sid)
+        return
+    
     clients[sid] = VideoInferenceService(_MODEL)
-    log.info(f"[CONNECT] Client {sid} connected from {environ.get('REMOTE_ADDR')}")
+    log.info(f"[CONNECT] Client {sid} connected from {environ.get('REMOTE_ADDR')} (Total: {len(clients)})")
     await sio.emit("status", {"message": "ready"}, to=sid)
 
 
 @sio.event
 async def disconnect(sid):
     if sid in clients:
+        # CRITICAL FIX: Cleanup resources to prevent memory leaks
+        try:
+            clients[sid].cleanup()
+        except Exception as e:
+            log.error(f"[CLEANUP ERROR] Failed to cleanup client {sid}: {e}")
+        
         del clients[sid]
-        log.info(f"[DISCONNECT] Client {sid} disconnected")
+        log.info(f"[DISCONNECT] Client {sid} disconnected and cleaned up")
     else:
         log.warning(f"[DISCONNECT] Unknown SID: {sid}")
 
@@ -252,18 +252,21 @@ async def frame(sid, data):
         img_bgr = b64_to_bgr_image(data["image"])
         frame_norm = preprocess_frame_bgr_exact(img_bgr, DIM)
         svc.add_frame_already_normalized(frame_norm)
-        log.debug(f"[FRAME] Received frame from {sid}, buffer size: {svc._buffer.shape[0]}")
+        # REDUCED LOGGING: Only log at debug level to prevent log spam
+        # log.debug(f"[FRAME] Received frame from {sid}, buffer size: {svc._buffer.shape[0]}")
     except Exception as e:
         log.error(f"[ERROR] Frame decode/preprocess failed for {sid}: {e}")
         return  # Skip frame silently to avoid client flood
 
     # Launch prediction thread (only when idle)
-    svc.maybe_launch_prediction()
+    launched = svc.maybe_launch_prediction()
 
     # Get current latest result
     result = svc.current_result()
     label, score = result["label"], result["score"]
 
-    log.info(f"[PREDICTION] Client {sid}: {label} ({score:.2f})")
+    # REDUCED LOGGING: Only log when prediction actually changes or is significant
+    if launched or (label != "none" and score > 0.6):
+        log.info(f"[PREDICTION] Client {sid}: {label} ({score:.2f})")
 
     await sio.emit("prediction", {"label": label, "score": score}, to=sid)

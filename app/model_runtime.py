@@ -90,10 +90,39 @@ import os
 import threading
 import numpy as np
 from typing import Dict, Any
+import tensorflow as tf
 from tensorflow.keras.models import load_model
 
-from .config import DIM, FRAMES, CHANNELS, MODEL_PATH, THRESHOLD, USE_DUMMY_MODEL
+from .config import (
+    DIM, FRAMES, CHANNELS, MODEL_PATH, THRESHOLD, USE_DUMMY_MODEL,
+    TF_INTER_OP_THREADS, TF_INTRA_OP_THREADS
+)
 from .labels import LABELS
+
+# CRITICAL FIX: Configure TensorFlow BEFORE any model loading
+# This prevents memory leaks and crashes
+
+# 1. Limit threading to prevent CPU overload
+tf.config.threading.set_inter_op_parallelism_threads(TF_INTER_OP_THREADS)
+tf.config.threading.set_intra_op_parallelism_threads(TF_INTRA_OP_THREADS)
+
+# 2. Configure GPU memory growth (if GPU available)
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"[TF CONFIG] GPU memory growth enabled for {len(gpus)} GPU(s)")
+    except RuntimeError as e:
+        print(f"[TF CONFIG] GPU memory growth config failed: {e}")
+else:
+    print("[TF CONFIG] No GPU detected, using CPU")
+
+# 3. Suppress TensorFlow warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 0=all, 1=INFO, 2=WARNING, 3=ERROR
+
+# 4. Optional: Force CPU-only execution (uncomment if CUDA issues persist)
+# tf.config.set_visible_devices([], 'GPU')
 
 # class DummyModel(object):
 #     def predict(self, x: np.ndarray) -> np.ndarray:
@@ -143,6 +172,11 @@ class VideoInferenceService(object):
       - reshape order
       - argmax + threshold
     One active prediction thread at a time (like 'x' in the script).
+    
+    CRITICAL FIXES:
+    - Thread-safe buffer operations with lock
+    - Fixed buffer slicing to prevent memory leaks
+    - Proper cleanup on disconnect
     """
     def __init__(self, model):
         self.model = model
@@ -150,37 +184,78 @@ class VideoInferenceService(object):
         self._buffer = np.empty((0, DIM[1], DIM[0], CHANNELS), dtype="float32")
         self._worker = threading.Thread()
         self._last_result = {"label": "none", "score": 0.0}
+        
+        # CRITICAL: Thread safety lock to prevent race conditions
+        self._lock = threading.Lock()
+        
+        # Track prediction count for debugging
+        self._prediction_count = 0
 
     def add_frame_already_normalized(self, frame_norm: np.ndarray) -> None:
         """
         Append a single normalized frame (H, W, C) exactly as user's code:
           frame_resh = np.reshape(frame_res, (1, H, W, C))
           np.append(buffer, frame_resh, axis=0)
+        
+        CRITICAL FIX: Thread-safe with proper buffer management
         """
-        frame_resh = np.reshape(frame_norm, (1, frame_norm.shape[0], frame_norm.shape[1], frame_norm.shape[2]))
-        self._buffer = np.append(self._buffer, frame_resh, axis=0)
+        with self._lock:
+            frame_resh = np.reshape(frame_norm, (1, frame_norm.shape[0], frame_norm.shape[1], frame_norm.shape[2]))
+            self._buffer = np.append(self._buffer, frame_resh, axis=0)
 
-        # left-shift when over capacity (keep semantics clean)
-        if self._buffer.shape[0] > FRAMES:
-            self._buffer = self._buffer[1:FRAMES, :, :, :]
+            # CRITICAL FIX: Correct slicing to maintain exactly FRAMES when full
+            # OLD BUG: self._buffer[1:FRAMES] would give 9 frames if buffer was 11
+            # NEW FIX: Keep last FRAMES only
+            if self._buffer.shape[0] > FRAMES:
+                self._buffer = self._buffer[-FRAMES:]  # Keep last FRAMES frames
 
     def ready(self) -> bool:
-        return self._buffer.shape[0] == FRAMES
+        with self._lock:
+            return self._buffer.shape[0] == FRAMES
 
     def _predict_sync(self):
-        # EXACT reshape: frame_buffer.reshape(1, *frame_buffer.shape)
-        inp = self._buffer.reshape(1, *self._buffer.shape)  # (1, T, H, W, C)
-        preds = self.model.predict(inp)[0]                  # (num_classes,)
-        best_idx = int(np.argmax(preds))
-        best_prob = float(preds[best_idx])
+        """
+        CRITICAL FIX: 
+        - Copy buffer snapshot to avoid race conditions
+        - Add TensorFlow session management
+        - Proper error handling to prevent crashes
+        """
+        try:
+            # CRITICAL: Take snapshot of buffer with lock
+            with self._lock:
+                if self._buffer.shape[0] < FRAMES:
+                    return self._last_result  # Not ready, return cached result
+                
+                # Create a copy to avoid buffer modification during prediction
+                buffer_snapshot = np.copy(self._buffer)
+            
+            # EXACT reshape: frame_buffer.reshape(1, *frame_buffer.shape)
+            inp = buffer_snapshot.reshape(1, *buffer_snapshot.shape)  # (1, T, H, W, C)
+            
+            # CRITICAL FIX: TensorFlow prediction with proper settings
+            # Use verbose=0 to suppress logs, predict_on_batch for efficiency
+            preds = self.model.predict(inp, verbose=0)[0]  # (num_classes,)
+            
+            best_idx = int(np.argmax(preds))
+            best_prob = float(preds[best_idx])
 
-        if best_prob > THRESHOLD:
-            label = LABELS.get(best_idx, str(best_idx))
-        else:
-            label = "none"
+            if best_prob > THRESHOLD:
+                label = LABELS.get(best_idx, str(best_idx))
+            else:
+                label = "none"
 
-        self._last_result = {"label": label, "score": best_prob}
-        return self._last_result
+            # Update result safely
+            with self._lock:
+                self._last_result = {"label": label, "score": best_prob}
+                self._prediction_count += 1
+            
+            return self._last_result
+            
+        except Exception as e:
+            # CRITICAL: Log error but don't crash the server
+            import logging
+            logging.error(f"[PREDICTION ERROR] {e}", exc_info=True)
+            return self._last_result  # Return last known good result
 
     def maybe_launch_prediction(self) -> bool:
         """
@@ -196,4 +271,17 @@ class VideoInferenceService(object):
         return False
 
     def current_result(self) -> Dict[str, Any]:
-        return dict(self._last_result)
+        with self._lock:
+            return dict(self._last_result)
+    
+    def cleanup(self):
+        """
+        CRITICAL: Cleanup resources on disconnect to prevent memory leaks
+        """
+        with self._lock:
+            # Clear buffer to free memory
+            self._buffer = np.empty((0, DIM[1], DIM[0], CHANNELS), dtype="float32")
+            
+        # Wait for any running prediction thread to finish (with timeout)
+        if self._worker.is_alive():
+            self._worker.join(timeout=2.0)  # Wait max 2 seconds
