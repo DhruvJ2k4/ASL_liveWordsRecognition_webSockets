@@ -169,28 +169,30 @@ def get_labels():
 # ------------------------------------------------------------------------------
 # Socket.IO Server Configuration
 # ------------------------------------------------------------------------------
+
+
+
 # sio = socketio.AsyncServer(
 #     async_mode="asgi",
-#     cors_allowed_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else "*",
+#     cors_allowed_origins="*",
+#     allow_upgrades=True,
+#     ping_timeout=120,
+#     ping_interval=25,
+#     engineio_logger=False,
+#     logger=False,
 # )
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins="*",
-    allow_upgrades=True,
-    ping_timeout=120,
-    ping_interval=25,
-    engineio_logger=False,
-    logger=False,
+    cors_allowed_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else "*",
 )
-
 # CRITICAL: Disable polling completely
-sio.eio.transports = ["websocket"]
+# sio.eio.transports = ["websocket"]
 
-app = socketio.ASGIApp(
-    sio,
-    fastapi_app,
-    socketio_path="socket.io"
-)
+# app = socketio.ASGIApp(
+#     sio,
+#     fastapi_app,
+#     socketio_path="socket.io"
+# )
 
 # sio = socketio.AsyncServer(
 #     async_mode="asgi",
@@ -200,7 +202,7 @@ app = socketio.ASGIApp(
 #     ping_interval=25,
 # )
 # # Combine FastAPI and Socket.IO
-# # app = socketio.ASGIApp(sio, fastapi_app)
+app = socketio.ASGIApp(sio, fastapi_app)
 # app = socketio.ASGIApp(
 #     sio,
 #     fastapi_app,
