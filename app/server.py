@@ -137,7 +137,7 @@ fastapi_app = FastAPI(title="ASL Realtime Backend (Socket.IO)", version="1.1.0")
 
 fastapi_app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS if CORS_ORIGINS != ["*"] else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
