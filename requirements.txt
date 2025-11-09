@@ -108,3 +108,6 @@ fastapi==0.88.0
 starlette==0.22.0
 pydantic==1.10.13
 uvicorn[standard]==0.20.0
+python-socketio==5.8.0
+python-engineio==4.8.0
+uvicorn==0.20.0
